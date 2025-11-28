@@ -1,11 +1,12 @@
 document.addEventListener('DOMContentLoaded', () => {
-
-    //HTML elements
+    // html elements
     const root = document.documentElement;
     const workspacePanel = document.getElementById('workspacePanel');
     const controlPanel = document.getElementById('controlPanel');
     const leftToggle = document.getElementById('leftToggle');
     const rightToggle = document.getElementById('rightToggle');
+    const peekLeft = document.getElementById('peekLeft');
+    const peekRight = document.getElementById('peekRight');
     const dropZone = document.getElementById('dropZone');
     const fileInput = document.getElementById('fileInput');
     const fileBrowse = document.getElementById('fileBrowse');
@@ -16,40 +17,63 @@ document.addEventListener('DOMContentLoaded', () => {
     const attachButton = document.getElementById('attachButton');
     const activeModel = document.getElementById('activeModel');
     const modelMeta = document.getElementById('modelMeta');
-    const modelRadios = document.querySelectorAll('input[name="model"]');
+    const modelGrid = document.getElementById('modelGrid');
+    const modelStatus = document.getElementById('modelStatus');
     const historyList = document.getElementById('historyList');
     const tempSlider = document.getElementById('tempSlider');
 
-    //Dynamic elements variables
+    // vars
     const sizes = { left: 320, right: 320, collapsed: 64 };
     const fileState = new Map();
+    const chatLog = [];
+    let webllmModule = null;
+    let enginePromise = null;
+    let currentModel = null;
 
-    //The Memory
+    const MODEL_CATALOG = [
+        {
+            label: 'Phi-3-mini',
+            modelId: 'Phi-3-mini-4k-instruct-q4f16_1-MLC',
+            path: 'https://huggingface.co/mlc-ai/web-llm/resolve/main/phi-3-mini-4k-instruct-q4f16_1-MLC',
+            blurb: 'Fast summaries, small context'
+        },
+        {
+            label: 'Llama-3',
+            modelId: 'Llama-3-8B-Instruct-q4f16_1-MLC',
+            path: 'https://huggingface.co/mlc-ai/web-llm/resolve/main/Llama-3-8B-Instruct-q4f16_1-MLC',
+            blurb: 'Long-form analysis & PDF QA'
+        },
+        {
+            label: 'MiniCPM',
+            modelId: 'MiniCPM-V-2_6-q4f16_1-MLC',
+            path: 'https://huggingface.co/mlc-ai/web-llm/resolve/main/MiniCPM-V-2_6-q4f16_1-MLC',
+            blurb: 'Charts & image-aware'
+        }
+    ];
+    const appConfig = {
+        model_list: MODEL_CATALOG.map(m => ({
+            model_id: m.modelId,
+            model_url: m.path
+        }))
+    };
+
     const AllMessages = [
-        { role: 'assistant', text: "Let's do this"},
+        { role: 'assistant', text: 'Drop PDFs on the left to attach them. Pick a model on the right and I will load it here in-browser.' }
     ];
 
+    //#region Setup
     AllMessages.forEach(addMessage);
+    renderModelGrid();
     wireExistingFileCards();
     setupPanels();
     setupDropZone();
     setupChatDropTarget();
     setupComposer();
-    setupModels();
     setupHistory();
     setupTemperature();
     syncLayout();
 
-    function wireExistingFileCards() {
-        document.querySelectorAll('.file-card').forEach(card => {
-            const name = card.dataset.name || 'Untitled.pdf';
-            const pages = Number(card.dataset.pages || '1');
-            const size = card.dataset.size || '';
-            fileState.set(name, { name, pages, size });
-            attachFileInteractions(card, { name, pages, size });
-        });
-    }
-
+    // Panels
     function setupPanels() {
         const toggle = (panel) => {
             const isCollapsed = panel.classList.toggle('collapsed');
@@ -60,6 +84,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         leftToggle?.addEventListener('click', () => toggle(workspacePanel));
         rightToggle?.addEventListener('click', () => toggle(controlPanel));
+        peekLeft?.addEventListener('click', () => toggle(workspacePanel));
+        peekRight?.addEventListener('click', () => toggle(controlPanel));
     }
 
     function syncLayout() {
@@ -67,6 +93,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const rightSize = controlPanel?.classList.contains('collapsed') ? sizes.collapsed : sizes.right;
         root.style.setProperty('--left-size', `${leftSize}px`);
         root.style.setProperty('--right-size', `${rightSize}px`);
+    }
+
+    // Files
+    function wireExistingFileCards() {
+        document.querySelectorAll('.file-card').forEach(card => {
+            const name = card.dataset.name || 'Untitled.pdf';
+            const pages = Number(card.dataset.pages || '1');
+            const size = card.dataset.size || '';
+            fileState.set(name, { name, pages, size });
+            attachFileInteractions(card, { name, pages, size });
+        });
     }
 
     function setupDropZone() {
@@ -118,26 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function setupComposer() {
-        messageForm?.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const text = messageInput?.value.trim();
-            if (!text) return;
-            addMessage({ role: 'user', text });
-            messageInput.value = '';
-            simulateAssistantResponse(text);
-        });
-    }
-
-    function setupModels() {
-        modelRadios.forEach(radio => {
-            radio.addEventListener('change', () => {
-                activeModel.textContent = `Model: ${radio.value}`;
-                addMessage({ role: 'system', text: `Switched to ${radio.value}.` });
-            });
-        });
-    }
-
+    // History
     function setupHistory() {
         historyList?.addEventListener('click', (event) => {
             const target = event.target.closest('.history-item');
@@ -151,6 +169,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Temperature
     function setupTemperature() {
         tempSlider?.addEventListener('input', () => {
             const value = Number(tempSlider.value) / 100;
@@ -158,6 +177,115 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Composer and chat
+    function setupComposer() {
+        messageForm?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = messageInput?.value.trim();
+            if (!text) return;
+            addMessage({ role: 'user', text });
+            messageInput.value = '';
+            await respondToUser(text);
+        });
+    }
+    //#endregion Setup
+
+    async function respondToUser(prompt) {
+        if (!enginePromise) {
+            const meta = MODEL_CATALOG[0];
+            selectModel(meta);
+        }
+        const placeholder = addMessage({ role: 'assistant', text: 'Loading model…' });
+        const engine = await enginePromise;
+        if (engine?.chat?.completions?.create) {
+            try {
+                placeholder.content.textContent = `Running ${currentModel?.label}…`;
+                const completion = await engine.chat.completions.create({
+                    messages: chatLog.map(mapChatToLLM)
+                });
+                const reply = completion?.choices?.[0]?.message?.content || 'No response generated.';
+                placeholder.content.textContent = reply;
+                if (placeholder.logEntry) {
+                    placeholder.logEntry.content = reply;
+                } else {
+                    chatLog.push({ role: 'assistant', content: reply });
+                }
+                return;
+            } catch (err) {
+                placeholder.content.textContent = `Model error: ${err?.message || err}. Falling back.`;
+            }
+        }
+        const fallback = `(offline) I will summarize based on your PDFs and prompt: "${prompt}".`;
+        placeholder.content.textContent = fallback;
+        if (placeholder.logEntry) {
+            placeholder.logEntry.content = fallback;
+        } else {
+            chatLog.push({ role: 'assistant', content: fallback });
+        }
+    }
+
+    // Models
+    function renderModelGrid() {
+        if (!modelGrid) return;
+        modelGrid.innerHTML = '';
+        MODEL_CATALOG.forEach((meta, index) => {
+            const label = document.createElement('label');
+            label.className = 'model-tile';
+            label.innerHTML = `
+                <input type="radio" name="model" value="${meta.modelId}" ${index === 0 ? 'checked' : ''}>
+                <div>
+                    <p class="model-name">${meta.label}</p>
+                    <p class="muted">${meta.blurb}</p>
+                    <p class="muted meta">${meta.path}</p>
+                </div>
+                <span class="tag${index === 1 ? ' alt' : ''}">${index === 0 ? 'default' : 'custom'}</span>
+            `;
+            label.querySelector('input')?.addEventListener('change', () => selectModel(meta));
+            modelGrid.appendChild(label);
+        });
+        if (MODEL_CATALOG[0]) {
+            selectModel(MODEL_CATALOG[0]);
+        }
+    }
+
+    function selectModel(meta) {
+        currentModel = meta;
+        activeModel.textContent = `Model: ${meta.label}`;
+        modelMeta.textContent = `loading ${meta.label}`;
+        addMessage({ role: 'system', text: `Switched to ${meta.label}. Loading from ${meta.path}` });
+        enginePromise = loadModel(meta);
+    }
+
+    async function loadModel(meta) {
+        modelStatus.textContent = `Loading ${meta.label}…`;
+        try {
+            const webllm = await ensureWebLLM();
+            const engine = await webllm.CreateMLCEngine(meta.modelId, {
+                appConfig,
+                initProgressCallback: (report) => {
+                    const pct = Math.round((report.progress || 0) * 100);
+                    modelStatus.textContent = `Loading ${meta.label}: ${report.text || ''} ${Number.isFinite(pct) ? pct + '%' : ''}`;
+                }
+            });
+            modelStatus.textContent = `${meta.label} ready`;
+            modelMeta.textContent = `loaded · ${meta.label}`;
+            addMessage({ role: 'system', text: `${meta.label} loaded and ready.` });
+            return engine;
+        } catch (err) {
+            modelStatus.textContent = `Failed to load ${meta.label}: ${err?.message || err}`;
+            modelMeta.textContent = `error · ${meta.label}`;
+            addMessage({ role: 'system', text: `Model load failed (${meta.label}). Using fallback responses.` });
+            return null;
+        }
+    }
+
+    async function ensureWebLLM() {
+        if (webllmModule) return webllmModule;
+        webllmModule = await import('https://esm.run/@mlc-ai/web-llm');
+        return webllmModule;
+    }
+
+    //#region Helpers
     function handleIncomingFiles(files, { alsoAttach }) {
         files.forEach(file => {
             const meta = buildFileMeta(file);
@@ -209,7 +337,7 @@ document.addEventListener('DOMContentLoaded', () => {
         addMessage({ role: 'system', text: `Attached "${meta.name}" (${meta.pages} page${meta.pages === 1 ? '' : 's'}).` });
     }
 
-    function addMessage({ role, text }) {
+    function addMessage({ role, text, track }) {
         const row = document.createElement('div');
         row.className = `message ${role}`;
 
@@ -230,16 +358,19 @@ document.addEventListener('DOMContentLoaded', () => {
         row.appendChild(bubble);
         chatFeed?.appendChild(row);
         chatFeed?.scrollTo({ top: chatFeed.scrollHeight, behavior: 'smooth' });
+
+        const shouldTrack = track !== undefined ? track : (role === 'assistant' || role === 'user');
+        let logEntry = null;
+        if (shouldTrack) {
+            logEntry = { role, content: text };
+            chatLog.push(logEntry);
+        }
+
+        return { row, bubble, content, logEntry };
     }
 
-    function simulateAssistantResponse(prompt) {
-        const model = activeModel.textContent.replace('Model: ', '') || 'SOTA-Alpha';
-        setTimeout(() => {
-            addMessage({
-                role: 'assistant',
-                text: `Nothing is implemented, what did you expect ?`
-            });
-        }, 550);
+    function mapChatToLLM(entry) {
+        return { role: entry.role, content: entry.content };
     }
 
     function formatBytes(bytes) {
@@ -253,4 +384,5 @@ document.addEventListener('DOMContentLoaded', () => {
         const approx = Math.max(1, Math.round(bytes / 80_000));
         return Math.min(approx, 120);
     }
+    //#endregion Helpers
 });

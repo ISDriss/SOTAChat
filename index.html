@@ -99,19 +99,10 @@
                 <div class="sidebar-content">
                     <div class="section-header">
                         <span>Models</span>
-                        <span class="meta" id="modelMeta">multimodal-ready</span>
+                        <span class="meta" id="modelMeta">idle</span>
                     </div>
-                    <div class="model-grid">
-                        <!--have a dynamic model list-->
-                        <label class="model-tile">
-                            <input type="radio" name="model" value="SOTA-PLACEHOLDER" checked>
-                            <div>
-                                <p class="model-name">SOTA-PLACEHOLDER</p>
-                                <p class="muted">DOES NOTHING</p>
-                            </div>
-                            <span class="tag">default</span>
-                        </label>
-                    </div>
+                    <div id="modelGrid" class="model-grid"></div>
+                    <div id="modelStatus" class="meta">Choose a model to start loading.</div>
 
                     <div class="control-block">
                         <!--Link that to the actual model once implemented-->
