@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const sizes = { left: 320, right: 320, collapsed: 64 };
     const fileState = new Map();
     const chatLog = [];
+    let appConfig = null;
     let webllmModule = null;
     let enginePromise = null;
     let currentModel = null;
@@ -50,12 +51,6 @@ document.addEventListener('DOMContentLoaded', () => {
             blurb: 'Charts & image-aware'
         }
     ];
-    const appConfig = {
-        model_list: MODEL_CATALOG.map(m => ({
-            model_id: m.modelId,
-            model_url: m.path
-        }))
-    };
 
     const AllMessages = [
         { role: 'assistant', text: 'Drop PDFs on the left to attach them. Pick a model on the right and I will load it here in-browser.' }
@@ -188,43 +183,76 @@ document.addEventListener('DOMContentLoaded', () => {
             await respondToUser(text);
         });
     }
-    //#endregion Setup
+    
+    function addMessage({ role, text, track }) {
+        const row = document.createElement('div');
+        row.className = `message ${role}`;
+
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+
+        if (role !== 'system') {
+            const tag = document.createElement('span');
+            tag.className = 'role-tag';
+            tag.textContent = role === 'user' ? 'You' : 'Assistant';
+            bubble.appendChild(tag);
+        }
+
+        const content = document.createElement('div');
+        content.innerText = text;
+        bubble.appendChild(content);
+
+        row.appendChild(bubble);
+        chatFeed?.appendChild(row);
+        chatFeed?.scrollTo({ top: chatFeed.scrollHeight, behavior: 'smooth' });
+
+        const shouldTrack = track !== undefined ? track : (role === 'assistant' || role === 'user');
+        let logEntry = null;
+        if (shouldTrack) {
+            logEntry = { role, content: text };
+            chatLog.push(logEntry);
+        }
+
+        return { row, bubble, content, logEntry };
+    }
 
     async function respondToUser(prompt) {
         if (!enginePromise) {
             const meta = MODEL_CATALOG[0];
             selectModel(meta);
         }
-        const placeholder = addMessage({ role: 'assistant', text: 'Loading model…' });
+        const placeholder = addMessage({ role: 'assistant', text: 'Loading model…', track: false });
         const engine = await enginePromise;
+        if (!engine) {
+            placeholder.content.textContent = `(offline) Model not ready.`;
+            return;
+        }
+
         if (engine?.chat?.completions?.create) {
             try {
                 placeholder.content.textContent = `Running ${currentModel?.label}…`;
                 const completion = await engine.chat.completions.create({
-                    messages: chatLog.map(mapChatToLLM)
+                    model: currentModel?.modelId,
+                    messages: chatLog.map(mapChatToLLM),
+                    stream: false
                 });
                 const reply = completion?.choices?.[0]?.message?.content || 'No response generated.';
                 placeholder.content.textContent = reply;
-                if (placeholder.logEntry) {
-                    placeholder.logEntry.content = reply;
-                } else {
-                    chatLog.push({ role: 'assistant', content: reply });
-                }
+                chatLog.push({ role: 'assistant', content: reply });
                 return;
             } catch (err) {
-                placeholder.content.textContent = `Model error: ${err?.message || err}. Falling back.`;
+                console.error('Model inference error', err);
+                placeholder.content.textContent = `Model error: ${err?.message || err}`;
+                return;
             }
         }
         const fallback = `(offline) I will summarize based on your PDFs and prompt: "${prompt}".`;
         placeholder.content.textContent = fallback;
-        if (placeholder.logEntry) {
-            placeholder.logEntry.content = fallback;
-        } else {
-            chatLog.push({ role: 'assistant', content: fallback });
-        }
+        chatLog.push({ role: 'assistant', content: fallback });
     }
 
-    // Models
+    //#endregion Setup
+    //#region Model management
     function renderModelGrid() {
         if (!modelGrid) return;
         modelGrid.innerHTML = '';
@@ -260,8 +288,9 @@ document.addEventListener('DOMContentLoaded', () => {
         modelStatus.textContent = `Loading ${meta.label}…`;
         try {
             const webllm = await ensureWebLLM();
+            const config = await ensureAppConfig(webllm);
             const engine = await webllm.CreateMLCEngine(meta.modelId, {
-                appConfig,
+                appConfig: config,
                 initProgressCallback: (report) => {
                     const pct = Math.round((report.progress || 0) * 100);
                     modelStatus.textContent = `Loading ${meta.label}: ${report.text || ''} ${Number.isFinite(pct) ? pct + '%' : ''}`;
@@ -275,6 +304,7 @@ document.addEventListener('DOMContentLoaded', () => {
             modelStatus.textContent = `Failed to load ${meta.label}: ${err?.message || err}`;
             modelMeta.textContent = `error · ${meta.label}`;
             addMessage({ role: 'system', text: `Model load failed (${meta.label}). Using fallback responses.` });
+            console.error('Model load error:', err);
             return null;
         }
     }
@@ -285,6 +315,38 @@ document.addEventListener('DOMContentLoaded', () => {
         return webllmModule;
     }
 
+    async function ensureAppConfig(webllm) {
+        if (appConfig) return appConfig;
+        const base = structuredClone(webllm?.prebuiltAppConfig || {});
+        const list = Array.isArray(base.model_list) ? base.model_list : [];
+
+        // keep existing model metadata (like tokenizer config) but point URLs to HF
+        MODEL_CATALOG.forEach(meta => {
+            const match = list.find(entry => entry.model_id === meta.modelId);
+            const url = ensureTrailingSlash(meta.path);
+            if (match) {
+                match.model_url = url;
+                match.model_lib_url = url;
+            } else {
+                list.push({
+                    model_id: meta.modelId,
+                    model_url: url,
+                    model_lib_url: url
+                });
+            }
+        });
+
+        base.model_list = list;
+        appConfig = base;
+        return appConfig;
+    }
+
+    function ensureTrailingSlash(url) {
+        if (!url) return url;
+        return url.endsWith('/') ? url : `${url}/`;
+    }
+
+    //#endregion Model management
     //#region Helpers
     function handleIncomingFiles(files, { alsoAttach }) {
         files.forEach(file => {
@@ -335,38 +397,6 @@ document.addEventListener('DOMContentLoaded', () => {
     function attachFileToChat(name) {
         const meta = fileState.get(name) || { name, pages: 1 };
         addMessage({ role: 'system', text: `Attached "${meta.name}" (${meta.pages} page${meta.pages === 1 ? '' : 's'}).` });
-    }
-
-    function addMessage({ role, text, track }) {
-        const row = document.createElement('div');
-        row.className = `message ${role}`;
-
-        const bubble = document.createElement('div');
-        bubble.className = 'bubble';
-
-        if (role !== 'system') {
-            const tag = document.createElement('span');
-            tag.className = 'role-tag';
-            tag.textContent = role === 'user' ? 'You' : 'Assistant';
-            bubble.appendChild(tag);
-        }
-
-        const content = document.createElement('div');
-        content.innerText = text;
-        bubble.appendChild(content);
-
-        row.appendChild(bubble);
-        chatFeed?.appendChild(row);
-        chatFeed?.scrollTo({ top: chatFeed.scrollHeight, behavior: 'smooth' });
-
-        const shouldTrack = track !== undefined ? track : (role === 'assistant' || role === 'user');
-        let logEntry = null;
-        if (shouldTrack) {
-            logEntry = { role, content: text };
-            chatLog.push(logEntry);
-        }
-
-        return { row, bubble, content, logEntry };
     }
 
     function mapChatToLLM(entry) {
