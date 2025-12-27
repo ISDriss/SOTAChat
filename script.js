@@ -26,8 +26,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const sizes = { left: 320, right: 320, collapsed: 64 };
     const fileState = new Map();
     const chatLog = [];
+    let vectorStore = [];
+    let chunkId = "";
     let appConfig = null;
     let webllmModule = null;
+    let transformersModule = null;
+    let embedder = null;
     let enginePromise = null;
     let currentModel = null;
 
@@ -96,13 +100,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const name = card.dataset.name || 'Untitled.pdf';
             const pages = Number(card.dataset.pages || '1');
             const size = card.dataset.size || '';
-            fileState.set(name, { name, pages, size });
+            fileState.set(name, { name, pages, size, file: null });
             attachFileInteractions(card, { name, pages, size });
         });
     }
 
     function setupDropZone() {
-        if (!dropZone) return;
+        if (!dropZone) return; 
         ['dragenter', 'dragover'].forEach(evt => dropZone.addEventListener(evt, (e) => {
             e.preventDefault();
             dropZone.classList.add('dragging');
@@ -347,12 +351,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     //#endregion Model management
-    //#region Helpers
+    //#region File management
     function handleIncomingFiles(files, { alsoAttach }) {
         files.forEach(file => {
             const meta = buildFileMeta(file);
-            fileState.set(meta.name, meta);
-            const card = createFileCard(meta);
+            const entry = { ...meta, file };
+            fileState.set(meta.name, entry);
+            const card = createFileCard(entry);
             fileList?.prepend(card);
             if (alsoAttach) {
                 attachFileToChat(meta.name);
@@ -364,6 +369,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const size = formatBytes(file.size);
         const pages = file.type === 'application/pdf' ? estimatePages(file.size) : 1;
         return { name: file.name || 'Unnamed.pdf', size, pages };
+    }
+
+    function estimatePages(bytes) {
+        const approx = Math.max(1, Math.round(bytes / 80_000));
+        return Math.min(approx, 120);
     }
 
     function attachFileInteractions(card, meta) {
@@ -398,6 +408,106 @@ document.addEventListener('DOMContentLoaded', () => {
         const meta = fileState.get(name) || { name, pages: 1 };
         addMessage({ role: 'system', text: `Attached "${meta.name}" (${meta.pages} page${meta.pages === 1 ? '' : 's'}).` });
     }
+    //#endregion File management
+    //#region Text extraction
+    async function fileToText(file) {
+        if (!file) throw new Error('Missing file for extraction');
+        if (file.type !== 'application/pdf') {
+            return file.text();
+        }
+
+        if (!window.pdfjsLib?.getDocument) {
+            throw new Error('pdf.js is not loaded');
+        }
+
+        const arrayBuffer = await file.arrayBuffer();
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const pdf = await loadingTask.promise;
+
+        let fullText = '';
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
+            const page = await pdf.getPage(pageNum);
+            const content = await page.getTextContent();
+            const pageText = content.items.map(item => item.str).join(' ');
+            fullText += pageText + '\n';
+        }
+
+        return fullText.trim();
+    }
+
+    function chunkText(text, chunkSize = 500, overlap = 100) {
+        const chunks = [];
+        let start = 0;
+        while (start < text.length) {
+            let end = start + chunkSize;
+            if (end > text.length) {
+                end = text.length;
+            }
+            chunks.push(text.substring(start, end));
+            start = end - overlap;
+        }
+        return chunks;
+    }
+
+    async function ensureTransformers() {
+        if (transformersModule) return transformersModule;
+        transformersModule = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@3.0.0');
+        return transformersModule;
+    }
+
+    async function ensureEmbedder() {
+        if (embedder) return embedder;
+        const { pipeline } = await ensureTransformers();
+        embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized: true });
+        return embedder;
+    }
+
+    async function embedText(text) {
+        const model = await ensureEmbedder();
+        const output = await model(text, { pooling: 'mean', normalize: true });
+        return Array.from(output.data);
+    }
+
+    async function embedFile(file) {
+        const text = await fileToText(file);
+        const chunks = chunkText(text);
+        const chunkIds = chunks.map((_, i) => `${file.name || 'file'}_${i + 1}`);
+        const embeddings = await Promise.all(chunks.map(embedText));
+        const entries = chunks.map((chunk, i) => ({
+            id: chunkIds[i],
+            text: chunk,
+            embedding: embeddings[i],
+        }));
+        vectorStore.push(...entries);
+        return { fileName: file.name || 'file', chunkCount: chunks.length };
+    }
+    //#endregion Text extraction
+    //#region Search engine
+    function cosineSimilarity(a, b) {
+        let dot = 0, aMag = 0, bMag = 0;
+        for (let i = 0; i < a.length; i++) {
+            const ai = a[i], bi = b[i];
+            dot += ai * bi;
+            aMag += ai * ai;
+            bMag += bi * bi;
+        }
+        const denom = Math.sqrt(aMag) * Math.sqrt(bMag);
+        return denom ? dot / denom : 0;
+    }
+
+    function topKRelevant(queryVec, k = 5) {
+        return vectorStore
+            .map(entry => ({ ...entry, score: cosineSimilarity(queryVec, entry.embedding) }))
+            .sort((a, b) => b.score - a.score)
+            .slice(0, k);
+    }
+
+    function queryToChunks(query, k = 5) {
+        return embedText(query).then(queryVec => topKRelevant(queryVec, k));
+    }
+
+    //#endregion Search engine
+    //#region Helpers
 
     function mapChatToLLM(entry) {
         return { role: entry.role, content: entry.content };
@@ -408,11 +518,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const sizes = ['B', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(1024));
         return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
-    }
-
-    function estimatePages(bytes) {
-        const approx = Math.max(1, Math.round(bytes / 80_000));
-        return Math.min(approx, 120);
     }
     //#endregion Helpers
 });
