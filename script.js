@@ -26,8 +26,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const sizes = { left: 320, right: 320, collapsed: 64 };
     const fileState = new Map();
     const chatLog = [];
+    const BASE_SYSTEM_PROMPT = `
+    You are SOTACHAT, a literature review assistant.
+
+    Hard rules:
+    - Use ONLY the CONTEXT BLOCK for factual claims.
+    - If the CONTEXT BLOCK is empty, reply: "No PDF context available. Please attach PDFs."
+    - Do NOT invent papers, titles, authors, numbers, or citations.
+    - Citations must be exactly one of the chunk ids shown in the CONTEXT BLOCK, like [myfile_3].
+    - Prefer synthesis over listing: compare papers, highlight agreements/disagreements.
+    - Be concise, do short answers, avoid repetition and stay on topic.
+    `;
+    let systemPrompt = BASE_SYSTEM_PROMPT;
+    let MAX_CHAT_MESSAGES = 10;
     let vectorStore = [];
-    let chunkId = "";
     let appConfig = null;
     let webllmModule = null;
     let transformersModule = null;
@@ -56,12 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     ];
 
-    const AllMessages = [
-        { role: 'assistant', text: 'Drop PDFs on the left to attach them. Pick a model on the right and I will load it here in-browser.' }
-    ];
-
     //#region Setup
-    AllMessages.forEach(addMessage);
     renderModelGrid();
     wireExistingFileCards();
     setupPanels();
@@ -176,7 +183,8 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Composer and chat
+    //#endregion Setup
+    //#region Chat
     function setupComposer() {
         messageForm?.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -220,6 +228,10 @@ document.addEventListener('DOMContentLoaded', () => {
         return { row, bubble, content, logEntry };
     }
 
+    function mapChatToLLM(entry) {
+        return { role: entry.role, content: entry.content };
+    }
+
     async function respondToUser(prompt) {
         if (!enginePromise) {
             const meta = MODEL_CATALOG[0];
@@ -235,9 +247,21 @@ document.addEventListener('DOMContentLoaded', () => {
         if (engine?.chat?.completions?.create) {
             try {
                 placeholder.content.textContent = `Running ${currentModel?.label}…`;
+                const contextChunks = await queryToChunks(prompt, 5); // top 5 relevant chunks
+                const contextMsg = { 
+                    role: "system", 
+                    content: systemPrompt
+                    + `\n\nCONTEXT BLOCK:\n\n${contextChunks.map(c => `[${c.id}] ${c.text}`).join('\n\n') ? '' : '(empty)'}\n\n`
+                };
+                const recent = chatLog.slice(-MAX_CHAT_MESSAGES).map(mapChatToLLM);
+                const messages = [
+                    contextMsg,
+                    ...recent
+                ];
+                console.log('llm message payload:', messages);
                 const completion = await engine.chat.completions.create({
                     model: currentModel?.modelId,
-                    messages: chatLog.map(mapChatToLLM),
+                    messages: messages,
                     stream: false
                 });
                 const reply = completion?.choices?.[0]?.message?.content || 'No response generated.';
@@ -255,7 +279,7 @@ document.addEventListener('DOMContentLoaded', () => {
         chatLog.push({ role: 'assistant', content: fallback });
     }
 
-    //#endregion Setup
+    //#endregion Chat
     //#region Model management
     function renderModelGrid() {
         if (!modelGrid) return;
@@ -404,9 +428,24 @@ document.addEventListener('DOMContentLoaded', () => {
         return card;
     }
 
-    function attachFileToChat(name) {
+    async function attachFileToChat(name) {
         const meta = fileState.get(name) || { name, pages: 1 };
-        addMessage({ role: 'system', text: `Attached "${meta.name}" (${meta.pages} page${meta.pages === 1 ? '' : 's'}).` });
+        const placeholder = addMessage({ role: 'system', text: `Adding "${meta.name}"…` });
+
+        if (!meta.file) {
+            placeholder.content.textContent = `No file data for "${meta.name}". Please re-upload.`;
+            return;
+        }
+
+        try {
+            const result = await embedFile(meta.file);
+            placeholder.content.textContent = `Attached "${meta.name}" (${meta.pages} page${meta.pages === 1 ? '' : 's'}) with ${result.chunkCount} chunk${result.chunkCount === 1 ? '' : 's'}.`;
+        } catch (err) {
+            console.error('Embed file error:', err);
+            placeholder.content.textContent = `Failed to add "${meta.name}": ${err?.message || err}`;
+        }
+        console.log('Current vector store size:', vectorStore.length);
+        console.log('file attached:', name);
     }
     //#endregion File management
     //#region Text extraction
@@ -451,13 +490,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function ensureTransformers() {
         if (transformersModule) return transformersModule;
-        transformersModule = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@3.0.0');
-        return transformersModule;
+        const candidates = [
+            'https://cdn.jsdelivr.net/npm/@xenova/transformers/dist/transformers.min.js',
+            'https://cdn.jsdelivr.net/npm/@xenova/transformers@3.1.0/dist/transformers.min.js',
+            'https://cdn.jsdelivr.net/npm/@xenova/transformers@3.0.0/dist/transformers.min.js',
+            'https://unpkg.com/@xenova/transformers/dist/transformers.min.js'
+        ];
+        let lastErr = null;
+        for (const url of candidates) {
+            try {
+                transformersModule = await import(`${url}?module`);
+                return transformersModule;
+            } catch (err) {
+                lastErr = err;
+                console.warn('Transformer import failed for', url, err);
+            }
+        }
+        throw lastErr || new Error('Failed to load @xenova/transformers');
     }
 
     async function ensureEmbedder() {
         if (embedder) return embedder;
-        const { pipeline } = await ensureTransformers();
+        const { pipeline, env } = await ensureTransformers();
+        env.allowLocalModels = false; // skip /models/ lookups
+        env.remoteModels = true;
+        env.remoteHost = 'https://huggingface.co';
         embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized: true });
         return embedder;
     }
@@ -508,10 +565,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     //#endregion Search engine
     //#region Helpers
-
-    function mapChatToLLM(entry) {
-        return { role: entry.role, content: entry.content };
-    }
 
     function formatBytes(bytes) {
         if (!bytes) return '0 B';
