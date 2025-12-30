@@ -19,8 +19,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const modelMeta = document.getElementById('modelMeta');
     const modelGrid = document.getElementById('modelGrid');
     const modelStatus = document.getElementById('modelStatus');
-    const historyList = document.getElementById('historyList');
     const tempSlider = document.getElementById('tempSlider');
+    const systemPromptTextArea = document.getElementById('systemPromptTextArea');
 
     // vars
     const sizes = { left: 320, right: 320, collapsed: 64 };
@@ -28,19 +28,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const chatLog = [];
     const BASE_SYSTEM_PROMPT = `
     You are SOTACHAT, a literature review assistant.
+    You are given a chat history and a CONTEXT BLOCK containing excerpts from user loaded papers.
 
     Hard rules:
-    - Use ONLY the CONTEXT BLOCK for factual claims.
-    - If the CONTEXT BLOCK is empty, reply: "No PDF context available. Please attach PDFs."
+    - Use the CONTEXT BLOCK for factual claims.
+    - If the CONTEXT BLOCK is empty, reply: "No PDF context available. Please attach PDFs." or "Hello! How can I assist you today?"
     - Do NOT invent papers, titles, authors, numbers, or citations.
     - Citations must be exactly one of the chunk ids shown in the CONTEXT BLOCK, like [myfile_3].
     - Prefer synthesis over listing: compare papers, highlight agreements/disagreements.
-    - Be concise, do short answers, avoid repetition and stay on topic.
+    - Be concise, prefer short answers, avoid repetition and stay on topic.
     `;
     let systemPrompt = BASE_SYSTEM_PROMPT;
     let MAX_CHAT_MESSAGES = 10;
     let vectorStore = [];
     let appConfig = null;
+    let temperature = 0.3;
+    let max_tokens = 500;
     let webllmModule = null;
     let transformersModule = null;
     let embedder = null;
@@ -75,8 +78,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setupDropZone();
     setupChatDropTarget();
     setupComposer();
-    setupHistory();
     setupTemperature();
+    setupSystemPrompt();
     syncLayout();
 
     // Panels
@@ -161,26 +164,25 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // History
-    function setupHistory() {
-        historyList?.addEventListener('click', (event) => {
-            const target = event.target.closest('.history-item');
-            if (!target) return;
-            const title = target.dataset.title || 'Previous chat';
-            const snippet = target.dataset.snippet || '';
-            addMessage({
-                role: 'system',
-                text: `Loaded "${title}". ${snippet}`
-            });
-        });
-    }
-
     // Temperature
     function setupTemperature() {
-        tempSlider?.addEventListener('input', () => {
-            const value = Number(tempSlider.value) / 100;
-            modelMeta.textContent = `temperature · ${value.toFixed(2)}`;
-        });
+        const updateTemp = () => {
+            const raw = Number(tempSlider?.value ?? 30);
+            temperature = Number.isFinite(raw) ? raw / 100 : 0.3;
+            modelMeta.textContent = `temperature · ${temperature.toFixed(2)}`;
+        };
+        tempSlider?.addEventListener('input', updateTemp);
+        updateTemp(); // set initial display/state
+    }
+    
+    // System prompt
+    function setupSystemPrompt() {
+        systemPromptTextArea.value = systemPrompt;
+        const updatePrompt = () => {
+            const text = systemPromptTextArea?.value.trim() || '';
+            systemPrompt = text;
+        };
+        systemPromptTextArea?.addEventListener('input', updatePrompt);
     }
 
     //#endregion Setup
@@ -248,10 +250,11 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 placeholder.content.textContent = `Running ${currentModel?.label}…`;
                 const contextChunks = await queryToChunks(prompt, 5); // top 5 relevant chunks
+                const contextText = contextChunks.map(c => `[${c.id}] ${c.text}`).join("\n\n");
                 const contextMsg = { 
                     role: "system", 
                     content: systemPrompt
-                    + `\n\nCONTEXT BLOCK:\n\n${contextChunks.map(c => `[${c.id}] ${c.text}`).join('\n\n') ? '' : '(empty)'}\n\n`
+                    + `\n\nCONTEXT BLOCK:\n\n${contextText ? contextText : '(empty)'}\n\n`
                 };
                 const recent = chatLog.slice(-MAX_CHAT_MESSAGES).map(mapChatToLLM);
                 const messages = [
@@ -262,6 +265,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const completion = await engine.chat.completions.create({
                     model: currentModel?.modelId,
                     messages: messages,
+                    temperature: temperature,
+                    max_tokens: max_tokens,
                     stream: false
                 });
                 const reply = completion?.choices?.[0]?.message?.content || 'No response generated.';
@@ -400,15 +405,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return Math.min(approx, 120);
     }
 
-    function attachFileInteractions(card, meta) {
-        const { name } = meta;
-        card.addEventListener('dragstart', (e) => {
-            e.dataTransfer.effectAllowed = 'copy';
-            e.dataTransfer.setData('text/plain', name);
-        });
-        card.querySelector('.insert-btn')?.addEventListener('click', () => attachFileToChat(name));
-    }
-
     function createFileCard(meta) {
         const card = document.createElement('article');
         card.className = 'file-card';
@@ -428,15 +424,53 @@ document.addEventListener('DOMContentLoaded', () => {
         return card;
     }
 
+    function attachFileInteractions(card, meta) {
+        const { name } = meta;
+
+        card.addEventListener("dragstart", (e) => {
+            e.dataTransfer.effectAllowed = "copy";
+            e.dataTransfer.setData("text/plain", name);
+        });
+
+        card.querySelector(".insert-btn")?.addEventListener("click", async () => {
+            await attachDetachSwitch(card, name);
+        });
+    }
+
+    async function attachDetachSwitch(card, name) {
+        const btn = card.querySelector(".insert-btn");
+        if (!btn) return;
+
+        const isAttached = btn.dataset.attached === "true";
+
+        btn.disabled = true;
+
+        try {
+            if (!isAttached) {
+            await attachFileToChat(name);
+            btn.textContent = "Remove";
+            btn.dataset.attached = "true";
+            } else {
+            await detachFileFromChat(name);
+            btn.textContent = "Insert";
+            btn.dataset.attached = "false";
+            }
+        } catch (err) {
+            console.error("Attach/detach failed:", err);
+            // optionally show a system message in UI
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+
     async function attachFileToChat(name) {
         const meta = fileState.get(name) || { name, pages: 1 };
         const placeholder = addMessage({ role: 'system', text: `Adding "${meta.name}"…` });
-
         if (!meta.file) {
             placeholder.content.textContent = `No file data for "${meta.name}". Please re-upload.`;
             return;
         }
-
         try {
             const result = await embedFile(meta.file);
             placeholder.content.textContent = `Attached "${meta.name}" (${meta.pages} page${meta.pages === 1 ? '' : 's'}) with ${result.chunkCount} chunk${result.chunkCount === 1 ? '' : 's'}.`;
@@ -446,6 +480,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         console.log('Current vector store size:', vectorStore.length);
         console.log('file attached:', name);
+    }
+
+    async function detachFileFromChat(name) {
+        const initialCount = vectorStore.length;
+        vectorStore = vectorStore.filter(entry => !entry.source || entry.source !== name);
+        const removedCount = initialCount - vectorStore.length;
+        addMessage({ role: 'system', text: `Detached "${name}", removed ${removedCount} chunk${removedCount === 1 ? '' : 's'}.` });
+        console.log('file detached:', name);
+        console.log('Current vector store size:', vectorStore.length);
     }
     //#endregion File management
     //#region Text extraction
@@ -475,15 +518,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function chunkText(text, chunkSize = 500, overlap = 100) {
+        if (chunkSize <= 0) throw new Error('chunkSize must be positive');
+        const step = Math.max(1, chunkSize - overlap);
+
         const chunks = [];
         let start = 0;
         while (start < text.length) {
-            let end = start + chunkSize;
-            if (end > text.length) {
-                end = text.length;
-            }
+            const end = Math.min(start + chunkSize, text.length);
             chunks.push(text.substring(start, end));
-            start = end - overlap;
+            if (end === text.length) break;
+            start += step;
         }
         return chunks;
     }
@@ -529,15 +573,31 @@ document.addEventListener('DOMContentLoaded', () => {
         const text = await fileToText(file);
         const chunks = chunkText(text);
         const chunkIds = chunks.map((_, i) => `${file.name || 'file'}_${i + 1}`);
-        const embeddings = await Promise.all(chunks.map(embedText));
-        const entries = chunks.map((chunk, i) => ({
-            id: chunkIds[i],
-            text: chunk,
-            embedding: embeddings[i],
-        }));
+
+        const entries = [];
+        const batchSize = 8; // tune: 4-16 depending on device
+
+        for (let i = 0; i < chunks.length; i += batchSize) {
+            const batchChunks = chunks.slice(i, i + batchSize);
+            const batchEmbeddings = await Promise.all(batchChunks.map(embedText));
+
+            for (let j = 0; j < batchChunks.length; j++) {
+            entries.push({
+                id: chunkIds[i + j],
+                text: batchChunks[j],
+                embedding: batchEmbeddings[j],
+                source: file.name || "file"
+            });
+            }
+
+            // Keep UI alive + allow clicks/scroll
+            await yieldToUI();
+        }
+
         vectorStore.push(...entries);
         return { fileName: file.name || 'file', chunkCount: chunks.length };
     }
+
     //#endregion Text extraction
     //#region Search engine
     function cosineSimilarity(a, b) {
@@ -572,5 +632,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const i = Math.floor(Math.log(bytes) / Math.log(1024));
         return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
     }
+
+    function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+    }
+
+    // Yield to UI every so often so the page stays responsive
+    async function yieldToUI() {
+        await new Promise(requestAnimationFrame);
+    }
+
     //#endregion Helpers
 });

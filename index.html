@@ -49,14 +49,6 @@
                     </div>
                     <div id="fileList" class="stack space-y-3">
                         <!--dynamic list here-->
-                        <article class="file-card" draggable="true" data-name="PLACEHOLDER.pdf" data-pages="0" data-size="-1 MB">
-                            <div class="file-pill">PDF</div>
-                            <div class="file-body">
-                                <p class="file-name">PLACEHOLDER.pdf</p>
-                                <p class="file-meta">0 pages · -1 MB</p>
-                            </div>
-                            <button class="chip subtle insert-btn" type="button">Insert</button>
-                        </article>
                     </div>
                 </div>
             </div>
@@ -112,6 +104,7 @@
 
                     <div class="control-block">
                         <!--Link that to the actual model once implemented-->
+                        <span class="section-header">Settings</span>
                         <div class="section-header">
                             <span>Sampling</span>
                             <span class="meta">temperature</span>
@@ -121,23 +114,11 @@
                             <span>Focused</span>
                             <span>Creative</span>
                         </div>
-                    </div>
-
-                    <div class="control-block">
                         <div class="section-header">
-                            <span>Chats</span>
-                            <button class="tiny-btn ghost" type="button" id="newThread">New thread</button>
+                            <span>System Prompt</span>
                         </div>
-                        <div class="history-list" id="historyList">
-                            <!--have a dynamic chat list-->
-                            <button class="history-item" type="button" data-title="CHAT PLACEHOLDER" data-snippet="this is a placeholder">
-                                <div>
-                                    <p class="history-title">CHAT PLACEHOLDER</p>
-                                    <p class="muted">this is a placeholder</p>
-                                </div>
-                                <span class="meta">08:24</span>
-                            </button>
-                        </div>
+                        <textarea id="systemPromptTextArea" rows="5">
+                        </textarea>
                     </div>
                 </div>
             </div>
