@@ -17,27 +17,27 @@ document.addEventListener('DOMContentLoaded', () => {
     const attachButton = document.getElementById('attachButton');
     const activeModel = document.getElementById('activeModel');
     const modelMeta = document.getElementById('modelMeta');
-    const modelGrid = document.getElementById('modelGrid');
+    const modelSelect = document.getElementById('modelSelect');
     const modelStatus = document.getElementById('modelStatus');
     const tempSlider = document.getElementById('tempSlider');
     const systemPromptTextArea = document.getElementById('systemPromptTextArea');
+    const resetSystemPrompt = document.getElementById('resetSystemPrompt');
 
     // vars
-    const sizes = { left: 320, right: 320, collapsed: 64 };
+    const sizes = { left: 300, right: 340, collapsed: 64 };
     const fileState = new Map();
     const chatLog = [];
-    const BASE_SYSTEM_PROMPT = `
-    You are SOTACHAT, a literature review assistant.
-    You are given a chat history and a CONTEXT BLOCK containing excerpts from user loaded papers.
+    const BASE_SYSTEM_PROMPT = 
+`You are SOTACHAT, a literature review assistant.
+You are given a chat history and a CONTEXT BLOCK containing excerpts from user loaded papers.
 
-    Hard rules:
-    - Use the CONTEXT BLOCK for factual claims.
-    - If the CONTEXT BLOCK is empty, reply: "No PDF context available. Please attach PDFs." or "Hello! How can I assist you today?"
-    - Do NOT invent papers, titles, authors, numbers, or citations.
-    - Citations must be exactly one of the chunk ids shown in the CONTEXT BLOCK, like [myfile_3].
-    - Prefer synthesis over listing: compare papers, highlight agreements/disagreements.
-    - Be concise, prefer short answers, avoid repetition and stay on topic.
-    `;
+Hard rules:
+- Use the CONTEXT BLOCK for factual claims.
+- If the CONTEXT BLOCK is empty, reply: "No PDF context available. Please attach PDFs." or "Hello! How can I assist you today?"
+- Do NOT invent papers, titles, authors, numbers, or citations.
+- Citations must be exactly one of the chunk ids shown in the CONTEXT BLOCK, like [myfile_3].
+- Prefer synthesis over listing: compare papers, highlight agreements/disagreements.
+- Be concise, prefer short answers, avoid repetition and stay on topic.`;
     let systemPrompt = BASE_SYSTEM_PROMPT;
     let MAX_CHAT_MESSAGES = 10;
     let vectorStore = [];
@@ -72,7 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
 
     //#region Setup
-    renderModelGrid();
+    renderModelSelect();
     wireExistingFileCards();
     setupPanels();
     setupDropZone();
@@ -183,6 +183,10 @@ document.addEventListener('DOMContentLoaded', () => {
             systemPrompt = text;
         };
         systemPromptTextArea?.addEventListener('input', updatePrompt);
+        resetSystemPrompt?.addEventListener('click', () => {
+            systemPrompt = BASE_SYSTEM_PROMPT;
+            systemPromptTextArea.value = systemPrompt;
+        });
     }
 
     //#endregion Setup
@@ -286,25 +290,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     //#endregion Chat
     //#region Model management
-    function renderModelGrid() {
-        if (!modelGrid) return;
-        modelGrid.innerHTML = '';
-        MODEL_CATALOG.forEach((meta, index) => {
-            const label = document.createElement('label');
-            label.className = 'model-tile';
-            label.innerHTML = `
-                <input type="radio" name="model" value="${meta.modelId}" ${index === 0 ? 'checked' : ''}>
-                <div>
-                    <p class="model-name">${meta.label}</p>
-                    <p class="muted">${meta.blurb}</p>
-                    <p class="muted meta">${meta.path}</p>
-                </div>
-                <span class="tag${index === 1 ? ' alt' : ''}">${index === 0 ? 'default' : 'custom'}</span>
-            `;
-            label.querySelector('input')?.addEventListener('change', () => selectModel(meta));
-            modelGrid.appendChild(label);
+    function renderModelSelect() {
+        if (!modelSelect) return;
+        modelSelect.innerHTML = '';
+        MODEL_CATALOG.forEach((meta) => {
+            const option = document.createElement('option');
+            option.value = meta.modelId;
+            option.textContent = `${meta.label} — ${meta.blurb}`;
+            modelSelect.appendChild(option);
+        });
+        modelSelect.addEventListener('change', () => {
+            const meta = MODEL_CATALOG.find(m => m.modelId === modelSelect.value);
+            if (meta) selectModel(meta);
         });
         if (MODEL_CATALOG[0]) {
+            modelSelect.value = MODEL_CATALOG[0].modelId;
             selectModel(MODEL_CATALOG[0]);
         }
     }

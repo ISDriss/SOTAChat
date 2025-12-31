@@ -99,7 +99,10 @@
                         <span>Models</span>
                         <span class="meta" id="modelMeta">idle</span>
                     </div>
-                    <div id="modelGrid" class="model-grid"></div>
+                    <label class="select-control" for="modelSelect">
+                        <span class="muted">Model selection</span>
+                        <select id="modelSelect" class="model-select"></select>
+                    </label>
                     <div id="modelStatus" class="meta">Choose a model to start loading.</div>
 
                     <div class="control-block">
@@ -116,8 +119,9 @@
                         </div>
                         <div class="section-header">
                             <span>System Prompt</span>
+                            <button id="resetSystemPrompt" class="tiny-btn ghost">Reset</button>
                         </div>
-                        <textarea id="systemPromptTextArea" rows="5">
+                        <textarea id="systemPromptTextArea" rows="12">
                         </textarea>
                     </div>
                 </div>

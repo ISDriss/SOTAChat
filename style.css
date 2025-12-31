@@ -390,6 +390,22 @@ input[type="range"] { accent-color: var(--accent); cursor: pointer; }
 
 .slider-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.9rem; }
 
+.select-control { display: flex; flex-direction: column; gap: 6px; }
+
+.model-select {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.04);
+    color: #e9edf6;
+    font-weight: 600;
+    outline: none;
+    cursor: pointer;
+}
+
+.model-select:focus { border-color: rgba(124, 247, 197, 0.5); box-shadow: 0 0 0 3px rgba(124, 247, 197, 0.15); }
+
 .history-list { display: flex; flex-direction: column; gap: 8px; }
 
 .history-item {
