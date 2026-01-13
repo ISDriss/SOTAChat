@@ -39,6 +39,7 @@ Built with:
 
 1) Choose a model in the right panel; wait for “ready”.  
 2) Drag/drop PDFs into the left panel (or click Browse).  
+3) Embed the pdf in the chat by clicking "insert".
 3) Ask questions in the composer; responses cite chunk IDs from your PDFs.  
 4) Adjust temperature or edit the system prompt to steer tone/constraints.  
 5) Use the “Insert/Remove” button on a file card to attach/detach its chunks.
@@ -62,10 +63,6 @@ Built with:
 - UI citations: chunk IDs are referenced in answers; visual citation indicators pending.  
 - Docs/deployment: README updated; needs screenshot/GIF of the interface + generated review.  
 - Audio (voice): not started.
-
-## Assets
-
-- Add a screenshot or GIF of the interface to `docs/screenshot.png` or `docs/lit-review.gif`, then reference it here for grading.
 
 ## Notes
 
