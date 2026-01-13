@@ -2,6 +2,14 @@
 
 SOTAChat is a fully client-side research copilot: drop in your PDFs, embed them in the browser, and chat with a lightweight WebLLM model to synthesize a literature review without sending data to a server.
 
+![last-commit](https://img.shields.io/github/last-commit/ISDriss/AICG_Shadertoy?style=flat&logo=git&logoColor=white&color=0080ff)
+![repo-top-language](https://img.shields.io/github/languages/top/ISDriss/AICG_Shadertoy?style=flat&color=0080ff)
+![repo-language-count](https://img.shields.io/github/languages/count/ISDriss/AICG_Shadertoy?style=flat&color=0080ff)
+
+Built with:
+![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E.svg?style=flat&logo=JavaScript&logoColor=black)
+![HTML5](https://img.shields.io/badge/HTML5-E34F26.svg?style=flat&logo=html5&logoColor=white)
+
 ## Live Demo
 
 - GitHub Pages: **https://isdriss.github.io/SOTAChat/**
