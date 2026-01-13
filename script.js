@@ -14,7 +14,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const chatFeed = document.getElementById('chatFeed');
     const messageForm = document.getElementById('messageForm');
     const messageInput = document.getElementById('messageInput');
-    const attachButton = document.getElementById('attachButton');
     const interruptButton = document.getElementById('interruptButton');
     const sendButton = document.getElementById('sendButton');
     const activeModel = document.getElementById('activeModel');
@@ -70,7 +69,7 @@ Hard rules:
             label: 'MiniCPM',
             modelId: 'MiniCPM-V-2_6-q4f16_1-MLC',
             path: 'https://huggingface.co/mlc-ai/web-llm/resolve/main/MiniCPM-V-2_6-q4f16_1-MLC',
-            blurb: 'Charts & image-aware'
+            blurb: 'Charts & image-aware [UNAVAILABLE]'
         }
     ];
 
@@ -136,7 +135,6 @@ Hard rules:
         });
 
         fileBrowse?.addEventListener('click', () => fileInput?.click());
-        attachButton?.addEventListener('click', () => fileInput?.click());
         fileInput?.addEventListener('change', (e) => {
             const files = Array.from(e.target.files || []);
             if (files.length) handleIncomingFiles(files, { alsoAttach: false });
