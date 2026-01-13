@@ -15,6 +15,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const messageForm = document.getElementById('messageForm');
     const messageInput = document.getElementById('messageInput');
     const attachButton = document.getElementById('attachButton');
+    const interruptButton = document.getElementById('interruptButton');
+    const sendButton = document.getElementById('sendButton');
     const activeModel = document.getElementById('activeModel');
     const modelMeta = document.getElementById('modelMeta');
     const modelSelect = document.getElementById('modelSelect');
@@ -49,6 +51,7 @@ Hard rules:
     let embedder = null;
     let enginePromise = null;
     let currentModel = null;
+    let currentGeneration = null;
 
     const MODEL_CATALOG = [
         {
@@ -196,9 +199,20 @@ Hard rules:
             e.preventDefault();
             const text = messageInput?.value.trim();
             if (!text) return;
+            if (currentGeneration) {
+                console.warn('Generation already in progress, ignoring new submit.');
+                return;
+            }
             addMessage({ role: 'user', text });
             messageInput.value = '';
             await respondToUser(text);
+        });
+
+        interruptButton?.addEventListener('click', () => {
+            if (!currentGeneration) return;
+            currentGeneration.cancelRequested = true;
+            currentGeneration.abortController?.abort();
+            interruptButton.disabled = true;
         });
     }
     
@@ -252,6 +266,9 @@ Hard rules:
 
         if (engine?.chat?.completions?.create) {
             try {
+                const abortController = new AbortController();
+                currentGeneration = { cancelRequested: false, abortController };
+                setGeneratingState(true);
                 placeholder.content.textContent = `Running ${currentModel?.label}…`;
                 const contextChunks = await queryToChunks(prompt, 5); // top 5 relevant chunks
                 const contextText = contextChunks.map(c => `[${c.id}] ${c.text}`).join("\n\n");
@@ -266,21 +283,65 @@ Hard rules:
                     ...recent
                 ];
                 console.log('llm message payload:', messages);
-                const completion = await engine.chat.completions.create({
+                const requestPayload = {
                     model: currentModel?.modelId,
                     messages: messages,
                     temperature: temperature,
                     max_tokens: max_tokens,
-                    stream: false
-                });
+                    stream: true,
+                    signal: abortController.signal
+                };
+
+                let completion = null;
+                try {
+                    completion = await engine.chat.completions.create(requestPayload);
+                } catch (streamErr) {
+                    console.warn('Streaming request failed, retrying without stream', streamErr);
+                    completion = await engine.chat.completions.create({ ...requestPayload, stream: false });
+                    completion = await engine.chat.completions.create({ ...requestPayload, stream: false });
+                }
+
+                const isStream = completion && typeof completion[Symbol.asyncIterator] === 'function';
+                if (isStream) {
+                    placeholder.content.textContent = '';
+                    let fullText = '';
+                    for await (const chunk of completion) {
+                        if (currentGeneration?.cancelRequested) {
+                            if (typeof completion.return === 'function') {
+                                try { await completion.return(); } catch (err) { console.warn('Stream return failed', err); }
+                            }
+                            placeholder.content.textContent = fullText || '(stopped)';
+                            addMessage({ role: 'system', text: 'Generation interrupted.' });
+                            return;
+                        }
+                        const delta = extractContentDelta(chunk);
+                        if (!delta) continue;
+                        fullText += delta;
+                        placeholder.content.textContent = fullText;
+                        chatFeed?.scrollTo({ top: chatFeed.scrollHeight, behavior: 'smooth' });
+                    }
+                    const finalText = fullText || 'No response generated.';
+                    placeholder.content.textContent = finalText;
+                    chatLog.push({ role: 'assistant', content: finalText });
+                    return;
+                }
+
                 const reply = completion?.choices?.[0]?.message?.content || 'No response generated.';
                 placeholder.content.textContent = reply;
                 chatLog.push({ role: 'assistant', content: reply });
                 return;
             } catch (err) {
-                console.error('Model inference error', err);
-                placeholder.content.textContent = `Model error: ${err?.message || err}`;
+                if (currentGeneration?.cancelRequested) {
+                    placeholder.content.textContent = 'Generation interrupted.';
+                    addMessage({ role: 'system', text: 'Generation interrupted.' });
+                } else {
+                    console.error('Model inference error', err);
+                    placeholder.content.textContent = `Model error: ${err?.message || err}`;
+                }
                 return;
+            } finally {
+                currentGeneration = null;
+                setGeneratingState(false);
             }
         }
         const fallback = `(offline) I will summarize based on your PDFs and prompt: "${prompt}".`;
@@ -640,6 +701,24 @@ Hard rules:
     // Yield to UI every so often so the page stays responsive
     async function yieldToUI() {
         await new Promise(requestAnimationFrame);
+    }
+
+    function extractContentDelta(chunk) {
+        if (!chunk?.choices?.length) return '';
+        const choice = chunk.choices[0];
+        const delta = choice?.delta?.content ?? choice?.message?.content ?? '';
+        if (Array.isArray(delta)) {
+            return delta.map(part => (typeof part === 'string' ? part : part?.text || '')).join('');
+        }
+        return typeof delta === 'string' ? delta : '';
+    }
+
+    function setGeneratingState(active) {
+        if (sendButton) sendButton.disabled = !!active;
+        if (interruptButton) interruptButton.disabled = !active;
+        if (!active) {
+            currentGeneration = null;
+        }
     }
 
     //#endregion Helpers
